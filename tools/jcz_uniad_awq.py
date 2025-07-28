@@ -1,27 +1,35 @@
-import argparse
-import cv2
-import torch
-import sklearn
-import mmcv
-import os
-import warnings
-from mmcv import Config, DictAction
-from mmcv.cnn import fuse_conv_bn
-from mmcv.parallel import MMDataParallel, MMDistributedDataParallel
-from mmcv.runner import (get_dist_info, init_dist, load_checkpoint,
-                         wrap_fp16_model)
+import sys, os
+import sys, pathlib
+bad = pathlib.Path('/data1/jcz/DL4AGX/AV-Solutions/uniad-trt/UniAD/third_party').resolve()
+sys.path[:] = [p for p in sys.path if not pathlib.Path(p).resolve().is_relative_to(bad)]
+# sys.path.insert(0, "/data1/jcz/AutoAWQ")   # 让 awq1 所在目录加入搜索路径
+import torch, awq, json, os
+from awq.quantize.quantizer import AwqQuantizer
 
-from mmdet3d.apis import single_gpu_test
-from mmdet3d.datasets import build_dataset
-from projects.mmdet3d_plugin.datasets.builder import build_dataloader
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, project_root)
+from projects.awq_quantize.jcz_quantize_bevformer import UniversalAwqQuantizer
+from projects.awq_quantize.jcz_uniad_awq import UniADAWQModel
+
 from mmdet3d.models import build_model
-from mmdet.apis import set_random_seed
-from projects.mmdet3d_plugin.uniad.apis.test import custom_multi_gpu_test
+from projects.mmdet3d_plugin.datasets.builder import build_dataloader
+from mmdet3d.datasets import build_dataset
+from mmcv import Config, DictAction
+import argparse
+import warnings
+from mmcv.runner import set_random_seed
 from mmdet.datasets import replace_ImageToTensor
-import time
-import os.path as osp
+from mmcv.runner import load_checkpoint
+from mmcv.cnn import fuse_conv_bn
+# from awq.quantize.quantizer import pseudo_quantize_tensor
+# from awq.modules.linear import (
+#     WQLinear_GEMM,
+#     WQLinear_GEMV,
+#     WQLinear_Marlin,
+#     WQLinear_GEMVFast,
+# )
+# import torch.nn as nn
 
-warnings.filterwarnings("ignore")
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -104,22 +112,9 @@ def parse_args():
         args.eval_options = args.options
     return args
 
-
 def main():
+    # print("开始量化模型...")
     args = parse_args()
-
-    assert args.out or args.eval or args.format_only or args.show \
-        or args.show_dir, \
-        ('Please specify at least one operation (save/eval/format/show the '
-         'results / save the results) with the argument "--out", "--eval"'
-         ', "--format-only", "--show" or "--show-dir"')
-
-    if args.eval and args.format_only:
-        raise ValueError('--eval and --format_only cannot be both specified')
-
-    if args.out is not None and not args.out.endswith(('.pkl', '.pickle')):
-        raise ValueError('The output file must be a pkl file.')
-
     cfg = Config.fromfile(args.config)
     if args.cfg_options is not None:
         cfg.merge_from_dict(args.cfg_options)
@@ -127,8 +122,9 @@ def main():
     if cfg.get('custom_imports', None):
         from mmcv.utils import import_modules_from_strings
         import_modules_from_strings(**cfg['custom_imports'])
-
-    # import modules from plguin/xx, registry will be updated
+    
+    # plugin机制，允许通过config文件定义的自定义python代码目录，从而在不修改源代码的前提下扩展功能
+    # （如：mmdet3d_plugin）
     if hasattr(cfg, 'plugin'):
         if cfg.plugin:
             import importlib
@@ -152,12 +148,12 @@ def main():
                 print(_module_path)
                 plg_lib = importlib.import_module(_module_path)
 
-    # set cudnn_benchmark
     if cfg.get('cudnn_benchmark', False):
         torch.backends.cudnn.benchmark = True
 
     cfg.model.pretrained = None
     # in case the test dataset is concatenated
+    # 设置每个gpu的样本数，这里设置为1，因为需要校准
     samples_per_gpu = 1
     if isinstance(cfg.data.test, dict):
         cfg.data.test.test_mode = True
@@ -175,92 +171,136 @@ def main():
             for ds_cfg in cfg.data.test:
                 ds_cfg.pipeline = replace_ImageToTensor(ds_cfg.pipeline)
 
-    # init distributed env first, since logger depends on the dist info.
-    if args.launcher == 'none':
-        distributed = False
-    else:
-        distributed = True
-        init_dist(args.launcher, **cfg.dist_params)
 
-    # set random seeds
     if args.seed is not None:
         set_random_seed(args.seed, deterministic=args.deterministic)
 
-    # build the dataloader
-    dataset = build_dataset(cfg.data.test)
-    data_loader = build_dataloader(
-        dataset,
-        samples_per_gpu=samples_per_gpu,
-        workers_per_gpu=cfg.data.workers_per_gpu,
-        dist=distributed,
-        shuffle=False,
-        nonshuffler_sampler=cfg.data.nonshuffler_sampler,
-    )
+        # 加载校准集
+    # dataset = build_dataset(cfg.data.test)
+    # calib_loader = build_dataloader(
+    #     dataset,
+    #     samples_per_gpu=1,
+    #     workers_per_gpu=cfg.data.workers_per_gpu,
+    #     dist=False,
+    #     shuffle=False,
+    #     nonshuffler_sampler=cfg.data.nonshuffler_sampler,
+    # )            # §2 提到的校准集
+    # 校准模型
 
-    # build the model and load checkpoint
-    cfg.model.train_cfg = None
+    # 加载模型
+    # model = build_model(cfg.model, test_cfg=cfg.get('test_cfg')).cuda().eval()                 # FP32 权重
     model = build_model(cfg.model, test_cfg=cfg.get('test_cfg'))
-    fp16_cfg = cfg.get('fp16', None)
-    if fp16_cfg is not None:
-        wrap_fp16_model(model)
-    checkpoint = load_checkpoint(model, args.checkpoint, map_location='cpu')
+    # target_submodule = model.pts_bbox_head                           # 子模块
+    # 初始化量化器
 
-    # 合并conv和bn层
+    checkpoint=load_checkpoint(model, args.checkpoint, map_location='cpu')
+
+        # 合并conv和bn层
     if args.fuse_conv_bn:
         model = fuse_conv_bn(model)
     # old versions did not save class info in checkpoints, this walkaround is
     # for backward compatibility
     # 旧版的checkpoint没有保存类别信息，这个兼容性处理是为了向后兼容
-    if 'CLASSES' in checkpoint.get('meta', {}):
-        model.CLASSES = checkpoint['meta']['CLASSES']
-    else:
-        model.CLASSES = dataset.CLASSES
-    # 处理语义分割的配色
-    # palette for visualization in segmentation tasks
-    if 'PALETTE' in checkpoint.get('meta', {}):
-        model.PALETTE = checkpoint['meta']['PALETTE']
-    elif hasattr(dataset, 'PALETTE'):
-        # segmentation dataset has `PALETTE` attribute
-        model.PALETTE = dataset.PALETTE
+    # if 'CLASSES' in checkpoint.get('meta', {}):
+    #     model.CLASSES = checkpoint['meta']['CLASSES']
+    # else:
+    #     model.CLASSES = dataset.CLASSES
+    # # 处理语义分割的配色
+    # # palette for visualization in segmentation tasks
+    # if 'PALETTE' in checkpoint.get('meta', {}):
+    #     model.PALETTE = checkpoint['meta']['PALETTE']
+    # elif hasattr(dataset, 'PALETTE'):
+    #     # segmentation dataset has `PALETTE` attribute
+    #     model.PALETTE = dataset.PALETTE
 
-    if not distributed:
-        assert False
-        # model = MMDataParallel(model, device_ids=[0])
-        # outputs = single_gpu_test(model, data_loader, args.show, args.show_dir)
-    else:
-        model = MMDistributedDataParallel(
-            model.cuda(),
-            device_ids=[torch.cuda.current_device()],
-            broadcast_buffers=False)
-        outputs = custom_multi_gpu_test(model, data_loader, args.tmpdir,
-                                        args.gpu_collect)
 
-    rank, _ = get_dist_info()
-    if rank == 0:
-        if args.out:
-            print(f'\nwriting results to {args.out}')
-            #assert False
-            mmcv.dump(outputs, args.out)
-            #outputs = mmcv.load(args.out)
-        kwargs = {} if args.eval_options is None else args.eval_options
-        kwargs['jsonfile_prefix'] = osp.join('test', args.config.split(
-            '/')[-1].split('.')[-2], time.ctime().replace(' ', '_').replace(':', '_'))
-        if args.format_only:
-            dataset.format_results(outputs, **kwargs)
 
-        if args.eval:
-            eval_kwargs = cfg.get('evaluation', {}).copy()
-            # hard-code way to remove EvalHook args
-            for key in [
-                    'interval', 'tmpdir', 'start', 'gpu_collect', 'save_best',
-                    'rule'
-            ]:
-                eval_kwargs.pop(key, None)
-            eval_kwargs.update(dict(metric=args.eval, **kwargs))
+#----------------------dataloader数据解包--------------------------------
+    # from mmcv.parallel.scatter_gather import scatter_kwargs
+    # from mmcv.parallel.scatter_gather import scatter
+    # calib_samples = []
+    # for i, batch_data in enumerate(calib_loader):
+    #     calib_samples.append(batch_data)
+    #     if i >= 10:  # 只取前10个batch作为校准数据
+    #         break
+    # device_id = 1
+    # device = torch.device('cuda:1')
+    # scattered_samples = []
+    # for batch_data in calib_samples:
+    #     scattered_batch = scatter(batch_data, [-1])
+    #     scattered_samples.append(scattered_batch[0])  # 取设备1上的数据
+    # print(f"Type of scattered_samples: {type(scattered_samples)}")
+    # print(f"Type of scattered_samples[0]: {type(scattered_samples[0])}")
+    # print(f"Keys in scattered_samples[0]: {list(scattered_samples[0].keys())}")
+    # print(type(scattered_samples[0]['img'][0]))
 
-            print(dataset.evaluate(outputs, **eval_kwargs))
+    # imgs = []
+    # for batch in scattered_samples:
+    #     img = batch['img'][0]  # 提取 tensor
+    #     imgs.append(img)
+    # print('type(imgs): ', type(imgs))
+    # print('len(imgs): ', len(imgs))
+
+
+
+
+
+#---------------------------------量化--------------------------------
+    model.cuda()
+    model.eval()
+    quant_config = { "zero_point": True, "q_group_size": 128, "w_bit": 4, "version": "GEMM" }
+    awq_backend = UniADAWQModel(
+        model=model,
+        model_type="jcz_uniad_awq",
+        is_quantized=False,
+        config=cfg.model,
+        quant_config=quant_config,
+        processor=None,
+    )
+    # quantizer = UniversalAwqQuantizer(
+    #     awq_backend=awq_backend,     # 或你为 DETR/BEVFormer 写的 backend
+    #     model=model,
+    #     calib_data=scattered_samples, # 校准集
+    #     tokenizer=None,
+    #     w_bit=4, group_size=128, version="gemm"
+    # )
+
+    # quantizer.quantize()
+    # 修改量化模块到UniversalAwqQuantizer里面修改该self.modules
+    # 可供压缩的层包括:["motion_head", "seg_head", "occ_head", "pts_bbox_head", "planning_head"]
+    # print("开始量化模型...")
+    quantizer = UniversalAwqQuantizer(
+        awq_backend=awq_backend, 
+        model=model,
+        # target_submodule=target_submodule,
+        tokenizer=None,
+        version="gemm",  # 或 "marlin"
+        w_bit=4, group_size=128, zero_point=True,
+        # 禁用 duo-scaling / clipping（虽然 pack_only 不会用到，也写上）
+        duo_scaling=False,
+        apply_clip=False,
+        quant_config=quant_config,
+        quant_layers=["motion_head", "seg_head", "occ_head", "pts_bbox_head", "planning_head"],
+        # ["motion_head", "seg_head", "occ_head", "pts_bbox_head", "planning_head"],
+    )
+
+    # 不跑 self.quantize()，而是：
+    quantizer.pack_only()
+
+    quantizer.save_quantized("/home/featurize/output/Uniad-quant-lxf0702/all", fmt="pth")
+
+    # torch.save(model.state_dict(), "model_awq_int4.pth")
+  
+
 
 
 if __name__ == '__main__':
     torch.multiprocessing.set_start_method('fork')
+    # import debugpy
+    # debugpy.listen(12361)
+    # print('wait debugger')
+    # debugpy.wait_for_client()
+    # print("Debugger Attached")
     main()
+
+    

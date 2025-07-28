@@ -87,6 +87,8 @@ class PlanningMetric(Metric):
         gt_trajs: torch.Tensor (B, n_future, 2)
         segmentation: torch.Tensor (B, n_future, 200, 200)
         '''
+        if segmentation.device != trajs.device:
+            segmentation = segmentation.to(trajs.device)
         B, n_future, _ = trajs.shape
         trajs = trajs * torch.tensor([-1, 1], device=trajs.device)
         gt_trajs = gt_trajs * torch.tensor([-1, 1], device=gt_trajs.device)
@@ -107,7 +109,7 @@ class PlanningMetric(Metric):
             )
             m1 = torch.logical_and(m1, torch.logical_not(gt_box_coll))
 
-            ti = torch.arange(n_future)
+            ti = torch.arange(n_future, device=trajs.device)
             obj_coll_sum[ti[m1]] += segmentation[i, ti[m1], yi[m1], xi[m1]].long()
 
             m2 = torch.logical_not(gt_box_coll)

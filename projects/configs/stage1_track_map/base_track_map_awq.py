@@ -100,6 +100,10 @@ model = dict(
             type="DCNv2", deform_groups=1, fallback_on_stride=False
         ),  # original DCNv2 will print log when perform load_state_dict
         stage_with_dcn=(False, False, True, True),
+        init_cfg=dict(
+            type='Pretrained',
+            checkpoint='/data1/jcz/llm-awq/UniAD/ckpts/bevformer_r101_dcn_24ep.pth'
+        )
     ),
     img_neck=dict(
         type="FPN",
@@ -362,9 +366,15 @@ dataset_type = "NuScenesE2EDataset"
 data_root = "data/nuscenes/"
 info_root = "data/infos/"
 file_client_args = dict(backend="disk")
-ann_file_train=info_root + f"nuscenes_infos_temporal_train.pkl"
-ann_file_val=info_root + f"nuscenes_infos_temporal_val.pkl"
-ann_file_test=info_root + f"nuscenes_infos_temporal_val.pkl"
+# ann_file_train=info_root + f"nuscenes_infos_temporal_train.pkl"
+# ann_file_val=info_root + f"nuscenes_infos_temporal_val.pkl"
+# ann_file_test=info_root + f"nuscenes_infos_temporal_val.pkl"
+ann_file_train=info_root + f"vad_nuscenes_infos_temporal_train.pkl"
+ann_file_val=info_root + f"vad_nuscenes_infos_temporal_val.pkl"
+ann_file_test=info_root + f"vad_nuscenes_infos_temporal_val.pkl"
+
+
+data_root_awq = "data/nuscenes_awq/"
 
 
 train_pipeline = [
@@ -388,7 +398,12 @@ train_pipeline = [
     dict(type="ObjectNameFilterTrack", classes=class_names),
     dict(type="NormalizeMultiviewImage", **img_norm_cfg),
     dict(type="PadMultiViewImage", size_divisor=32),
-    dict(type="DefaultFormatBundle3D", class_names=class_names),
+    # dict(type="DefaultFormatBundle3D", class_names=class_names),
+    dict(                            # ↓↓↓ 核心替换 ↓↓↓
+        type='PackDet3DInputs',
+        keys=['points','img'],             # 送模型的输入张量
+        meta_keys=('lidar2cam', 'cam2img', 'token')),  # 要留在 CPU 的元信息
+    dict(type='AddGTMapMasks'),      # 自定义补丁
     dict(
         type="CustomCollect3D",
         keys=[
@@ -429,6 +444,7 @@ train_pipeline = [
         ],
     ),
 ]
+
 test_pipeline = [
     dict(type='LoadMultiViewImageFromFilesInCeph', to_float32=True,
             file_client_args=file_client_args, img_root=data_root),
@@ -536,6 +552,25 @@ data = dict(
         type=dataset_type,
         file_client_args=file_client_args,
         data_root=data_root,
+        test_mode=True,
+        ann_file=ann_file_test,
+        pipeline=test_pipeline,
+        patch_size=patch_size,
+        canvas_size=canvas_size,
+        bev_size=(bev_h_, bev_w_),
+        predict_steps=predict_steps,
+        past_steps=past_steps,
+        fut_steps=fut_steps,
+        occ_n_future=occ_n_future_max,
+        use_nonlinear_optimizer=use_nonlinear_optimizer,
+        classes=class_names,
+        modality=input_modality,
+        eval_mod=['det', 'map', 'track'],
+    ),
+    test_awq=dict(
+        type=dataset_type,
+        file_client_args=file_client_args,
+        data_root=data_root_awq,
         test_mode=True,
         ann_file=ann_file_test,
         pipeline=test_pipeline,

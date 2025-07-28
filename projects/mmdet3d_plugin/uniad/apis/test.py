@@ -53,7 +53,7 @@ def custom_multi_gpu_test(model, data_loader, tmpdir=None, gpu_collect=False):
     Returns:
         list: The prediction results.
     """
-    model.eval()
+    # model.eval()
 
     # Occ eval init
     eval_occ = hasattr(model.module, 'with_occ_head') \
