@@ -248,7 +248,7 @@ def main():
     # ########## ONNX Export Starts###############
     onnx_folder = "./onnx/"
     folder_dat = './dumped_inputs/'
-    onnx_file_name = onnx_folder+"uniad_tiny_imgx0.25_cp.onnx"
+    onnx_file_name = onnx_folder+"uniad_tiny_imgx0.25_cp_b2d.onnx"
     onnx_export_input = './nuscenes_np/uniad_onnx_input/'
     onnx_export_output = './nuscenes_np/uniad_pth_trtp_out/'
     if 'tiny' in onnx_file_name:

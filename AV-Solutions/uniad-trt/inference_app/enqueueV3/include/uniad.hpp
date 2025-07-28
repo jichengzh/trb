@@ -37,7 +37,7 @@
 #define TRACK_INS_MIN 901
 
 namespace UniAD {
-
+// 用于定义推理引擎中用到的参数：TensorRT engine 路径，输入/输出的最大 shape，输入/输出的元素类型（float/int32），输入/输出的 buffer size
 struct KernelParams {
   std::string trt_engine;
   int num_inputs = 0;
