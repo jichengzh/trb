@@ -1,0 +1,88 @@
+/data1/jcz/Bench2Drive/Bench2DriveZoo/carla/CarlaUE4.sh -RenderOffScreen -nosound -carla-rpc-port=30000 -graphicsadapter=0 None
+4.26.2-0+++UE4+Release-4.26 522 0
+Disabling core dumps.
+load_world success , attempts=0
+traffic_manager init success, try_time=0
+
+[1m========= Preparing RouteScenario_1711 (repetition 0) =========[0m
+[1m> Loading the world[0m
+[1m> Setting up the agent[0m
+[Energy] Idle power consumption: 2298.000 mJ in 0.20 s
+load checkpoint from path: /data1/jcz/Bench2Drive/Bench2DriveZoo/ckpts/uniad_base_b2d.pth
+[1m> Running the route[0m
+=== [Agent] -- Wallclock = 2025-08-08 23:20:27.061 -- System time = 0.000 -- Game time = 0.040 -- Ratio = 0.000x
+
+[91mError during the simulation:
+
+Traceback (most recent call last):
+  File "/data1/jcz/Bench2Drive/leaderboard/leaderboard/envs/sensor_interface.py", line 232, in get_data
+    sensor_data = self._data_buffers.get(True, self._queue_timeout)
+  File "/data1/anaconda3/envs/b2d_zoo/lib/python3.8/queue.py", line 178, in get
+    raise Empty
+_queue.Empty
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/data1/jcz/Bench2Drive/leaderboard/leaderboard/scenarios/scenario_manager.py", line 193, in _tick_scenario
+    ego_action, inference_time = self._agent_wrapper()
+  File "/data1/jcz/Bench2Drive/leaderboard/leaderboard/autoagents/agent_wrapper.py", line 147, in __call__
+    return self._agent()
+  File "/data1/jcz/Bench2Drive/leaderboard/leaderboard/autoagents/autonomous_agent.py", line 106, in __call__
+    input_data = self.sensor_interface.get_data(GameTime.get_frame())
+  File "/data1/jcz/Bench2Drive/leaderboard/leaderboard/envs/sensor_interface.py", line 238, in get_data
+    raise SensorReceivedNoData("A sensor took too long to send their data")
+leaderboard.envs.sensor_interface.SensorReceivedNoData: A sensor took too long to send their data
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "leaderboard/leaderboard/leaderboard_evaluator.py", line 412, in _load_and_run_scenario
+    self.manager.run_scenario()
+  File "/data1/jcz/Bench2Drive/leaderboard/leaderboard/scenarios/scenario_manager.py", line 166, in run_scenario
+    self._tick_scenario()
+  File "/data1/jcz/Bench2Drive/leaderboard/leaderboard/scenarios/scenario_manager.py", line 219, in _tick_scenario
+    raise RuntimeError(e)
+RuntimeError: A sensor took too long to send their data
+[0m
+[1m> Stopping the route[0m
+
+[1m========= Results of RouteScenario_1711 (repetition 0) ------ [91mFAILURE[0m [1m=========[0m
+
+╒═══════════════════════╤═════════════════════╕
+│ Start Time            │ 2025-08-08 23:20:26 │
+├───────────────────────┼─────────────────────┤
+│ End Time              │ 2025-08-08 23:25:32 │
+├───────────────────────┼─────────────────────┤
+│ System Time           │ 305.6s              │
+├───────────────────────┼─────────────────────┤
+│ Game Time             │ 0.08s               │
+├───────────────────────┼─────────────────────┤
+│ Ratio (Game / System) │ 0.0                 │
+╘═══════════════════════╧═════════════════════╛
+
+╒═══════════════════════╤═════════╤═════════╕
+│ Criterion             │ Result  │ Value   │
+├───────────────────────┼─────────┼─────────┤
+│ RouteCompletionTest   │ [91mFAILURE[0m │ 0.0 %   │
+├───────────────────────┼─────────┼─────────┤
+│ OutsideRouteLanesTest │ [92mSUCCESS[0m │ 0 %     │
+├───────────────────────┼─────────┼─────────┤
+│ CollisionTest         │ [92mSUCCESS[0m │ 0 times │
+├───────────────────────┼─────────┼─────────┤
+│ RunningRedLightTest   │ [92mSUCCESS[0m │ 0 times │
+├───────────────────────┼─────────┼─────────┤
+│ RunningStopTest       │ [92mSUCCESS[0m │ 0 times │
+├───────────────────────┼─────────┼─────────┤
+│ MinSpeedTest          │ [92mSUCCESS[0m │ 100 %   │
+├───────────────────────┼─────────┼─────────┤
+│ InRouteTest           │ [92mSUCCESS[0m │         │
+├───────────────────────┼─────────┼─────────┤
+│ AgentBlockedTest      │ [92mSUCCESS[0m │         │
+├───────────────────────┼─────────┼─────────┤
+│ Timeout               │ [92mSUCCESS[0m │         │
+╘═══════════════════════╧═════════╧═════════╛
+
+[1m> Registering the route statistics[0m
+True
+1 crash, [1/110], please restart
